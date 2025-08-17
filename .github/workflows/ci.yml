@@ -21,7 +21,7 @@ jobs:
         runner: [ubuntu-22.04, ParallelHoss]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v4
         with:

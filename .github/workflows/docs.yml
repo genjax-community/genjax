@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # This works via GitHub's "deploy keys". This repo has a secret set up
       # with the private key, and the mkdocs-material-insiders clone in the
