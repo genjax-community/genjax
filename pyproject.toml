@@ -51,6 +51,14 @@ numpy = ">=1.22,<2.0.0"
 genstudio = ">=2025.2.1"
 safety = "^3.5.1"
 
+# Security vulnerability fixes - minimum versions to address CVEs
+# These constraints ensure transitive dependencies meet security requirements
+authlib = ">=1.6.5"      # CVE fixes for authlib 1.6.0
+pillow = ">=11.3.0"      # CVE-2025-48379 buffer overflow fix
+regex = ">=2025.7.29"    # ReDoS vulnerability fix
+requests = ">=2.32.4"    # CVE-2024-47081 .netrc credential leak fix
+urllib3 = ">=2.5.0"      # CVE-2025-50181, CVE-2025-50182 fixes
+
 [tool.poetry.group.dev]
 optional = true
 
@@ -66,7 +74,7 @@ ruff = "0.11.2"
 safety = ">=2.3.5"
 seaborn = "^0.12.1"
 xdoctest = "^1.1.0"
-jupyterlab = "^4.2.5"
+jupyterlab = ">=4.4.8"  # CVE-2025-59842 reverse tabnabbing fix
 nox = "^2024.3.2"
 nox-poetry = "^1.0.3"
 jupytext = "^1.16.2"
