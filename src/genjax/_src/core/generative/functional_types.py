@@ -14,6 +14,7 @@
 
 
 import functools
+from abc import abstractmethod
 
 import jax.numpy as jnp
 import jax.tree_util as jtu
@@ -24,15 +25,18 @@ from genjax._src.core.compiler.interpreters.incremental import Diff
 from genjax._src.core.compiler.staging import FlagOp, tree_choose
 from genjax._src.core.pytree import Pytree
 from genjax._src.core.typing import (
+    Any,
     Array,
     ArrayLike,
     Flag,
     Generic,
+    IntArray,
     TypeVar,
 )
 
+DynamicAddressComponent = int | IntArray | slice
+DynamicAddress = DynamicAddressComponent | tuple[DynamicAddressComponent, ...]
 R = TypeVar("R")
-
 
 #########################
 # Masking and sum types #
@@ -366,3 +370,254 @@ class Mask(Generic[R], Pytree):
             A new Mask combining all inputs with XOR operations
         """
         return functools.reduce(lambda a, b: a ^ b, masks, mask)
+
+
+_full_slice = slice(None, None, None)
+
+###############
+# Choice maps #
+###############
+
+
+def _drop_prefix(
+    dynamic_components: list[DynamicAddressComponent],
+) -> list[DynamicAddressComponent]:
+    # Check for prefix of int or scalar Array instances
+    prefix_end = 0
+    for comp in dynamic_components:
+        if isinstance(comp, int) or (isinstance(comp, Array) and comp.shape == ()):
+            prefix_end += 1
+        else:
+            break
+
+    return dynamic_components[prefix_end:]
+
+
+def _validate_addr(
+    addr: tuple[DynamicAddressComponent, ...], allow_partial_slice: bool = False
+) -> tuple[DynamicAddressComponent, ...]:
+    """
+    Validates the structure of an address tuple.
+
+    This function checks if the given address adheres to the following structure:
+
+    1. A prefix consisting of only scalar addresses (int or an IntArray with shape == ())
+    2. Optionally (if `allow_partial_slice` is True), a single non-full-slice or non-scalar array
+    3. A tail of full slices (: or slice(None,None,None))
+
+    Args:
+        addr: The address (or address component) to validate.
+        allow_partial_slice: If True, allows a single partial slice or non-scalar array. Defaults to False.
+
+    Returns:
+        The validated address tuple.
+
+    Raises:
+        ValueError: If the address structure is invalid.
+    """
+    dynamic_components = list(addr)
+
+    if dynamic_components:
+        remaining = _drop_prefix(dynamic_components)
+
+        if len(remaining) > 0:
+            first = remaining[0]
+            if isinstance(first, Array) and first.shape != ():
+                remaining = remaining[1:]
+            elif (
+                allow_partial_slice
+                and isinstance(first, slice)
+                and first != _full_slice
+            ):
+                remaining = remaining[1:]
+
+        if not all(s == _full_slice for s in remaining):
+            if allow_partial_slice:
+                caveat = "an optional partial slice or Array, and then only full slices"
+            else:
+                caveat = "full slices"
+
+            raise ValueError(
+                f"Address must consist of scalar components, followed by {caveat}. Found: {dynamic_components}"
+            )
+
+    return addr
+
+
+class _SparseBuilder:
+    sparse: "Sparse | None"
+    addrs: list[DynamicAddressComponent]
+
+    def __init__(self, sparse: "Sparse | None", addrs: list[DynamicAddressComponent]):
+        self.sparse = sparse
+        self.addrs = addrs
+
+    def __getitem__(self, addr: DynamicAddress) -> "_SparseBuilder":
+        addr = addr if isinstance(addr, tuple) else (addr,)
+        return _SparseBuilder(
+            self.sparse,
+            [*self.addrs, *addr],
+        )
+
+    def set(self, v) -> "Sparse" | ArrayLike:
+        addrs = _validate_addr(tuple(self.addrs), allow_partial_slice=False)
+        sparse = Sparse.extend(v, *addrs)
+        if self.sparse is None:
+            return sparse
+        else:
+            return sparse | self.sparse
+
+
+class Sparse(Pytree):
+    @staticmethod
+    def extend(
+        v: "Sparse" | Mask[Any] | ArrayLike, *addrs: DynamicAddressComponent
+    ) -> "Sparse" | ArrayLike:
+        acc = v
+        for addr in reversed(addrs):
+            acc = Indexed.build(acc, addr)
+
+        return acc
+
+    @staticmethod
+    def to_mask(
+        v: "Sparse" | Mask[Any] | ArrayLike, flag: Flag
+    ) -> "Sparse" | Mask[Any]:
+        if isinstance(v, Sparse):
+            return v.mask(flag)
+        else:
+            return Mask.build(v, flag)
+
+    @abstractmethod
+    def mask(self, flag: Flag) -> "Sparse" | Mask[Any] | ArrayLike:
+        pass
+
+    @abstractmethod
+    def get(
+        self,
+        addr: DynamicAddressComponent,
+    ) -> "Sparse" | Mask[Any] | ArrayLike:
+        pass
+
+    def deep_get(self, *addresses: DynamicAddressComponent) -> "Sparse" | ArrayLike:
+        flat_addr: tuple[DynamicAddressComponent, ...] = _validate_addr(
+            addresses, allow_partial_slice=True
+        )
+        # Start with the full sparse object
+        result = self
+
+        # Process each address component
+        for i, addr in enumerate(flat_addr):
+            # Get the next level
+            next_level = result.get(addr)
+
+            # If we got back a Sparse, keep going
+            if isinstance(next_level, Sparse):
+                result = next_level
+            else:
+                # We hit an ArrayLike - pass remaining components to it
+                remaining = flat_addr[i + 1 :]
+                if remaining:
+                    if isinstance(next_level, Array):
+                        return next_level[remaining]
+                    else:
+                        raise ValueError(
+                            f"Cannot index into non-array type {type(next_level)} with remaining indices {remaining}"
+                        )
+                return next_level
+
+        return result
+
+    ######################
+    # Combinator methods #
+    ######################
+
+    def __or__(self, other: "Sparse" | ArrayLike) -> "Sparse" | ArrayLike:
+        return Or.build(self, other)
+
+    def __getitem__(
+        self,
+        addr: DynamicAddress,
+    ):
+        addr_tuple = addr if isinstance(addr, tuple) else (addr,)
+        return self.deep_get(*addr_tuple)
+
+
+@Pytree.dataclass(match_args=True)
+class Indexed(Sparse):
+    sparse: Sparse | Mask[Any] | ArrayLike
+    addr: int | IntArray
+
+    @staticmethod
+    def build(
+        v: Sparse | Mask[Any] | ArrayLike, addr: DynamicAddressComponent
+    ) -> Sparse | Mask[Any] | ArrayLike:
+        if isinstance(addr, slice):
+            if addr == _full_slice:
+                return v
+            else:
+                raise ValueError(f"Partial slices not supported: {addr}")
+        else:
+            return Indexed(v, addr)
+
+    def mask(self, flag: Flag) -> Sparse | Mask[Any] | ArrayLike:
+        addr = _full_slice if self.addr is None else self.addr
+        return Sparse.extend(Sparse.to_mask(self.sparse, flag), addr)
+
+    def get_value(self) -> Any:
+        return None
+
+    def get(self, addr: DynamicAddressComponent) -> Sparse:
+        if not isinstance(addr, slice):
+            # If we allowed non-scalar addresses, the `get_submap` call would not reduce the leaf by a dimension, and further get_submap calls would target the same dimension.
+            assert not jnp.asarray(addr, copy=False).shape, (
+                "Only scalar dynamic addresses are supported by get_submap."
+            )
+
+        if self.addr is None:
+            # None means that this instance was created with `:`, so no masking is required and we assume that the user will provide an in-bounds `int | ScalarInt`` address. If they don't they will run up against JAX's clamping behavior.
+            return jtu.tree_map(
+                lambda v: v[addr], self.sparse, is_leaf=lambda x: isinstance(x, Mask)
+            )
+
+        elif isinstance(self.addr, Array) and self.addr.shape:
+            # We can't allow slices, as self.addr might look like, e.g. `[2,5,6]`, and we don't have any way to combine this "sparse array selector" with an incoming slice.
+            assert not isinstance(addr, slice), (
+                f"Slices are not allowed against array-shaped dynamic addresses. Tried to apply {addr} to {self.addr}."
+            )
+
+            check = self.addr == addr
+
+            # If `check` contains a match (we know it will be a single match, since we constrain addr to be scalar), then `idx` is the index of the match in `self.addr`.
+            # Else, idx == 0 (selecting "junk data" of the right shape at the leaf) and check_array[idx] == False (masking the junk data).
+            idx = jnp.argwhere(check, size=1, fill_value=0)[0, 0]
+
+            return jtu.tree_map(
+                lambda v: Mask.build(v[idx], check[idx]),
+                self.sparse,
+                is_leaf=lambda x: isinstance(x, Mask),
+            )
+
+        else:
+            return self.sparse.mask(self.addr == addr)
+
+
+@Pytree.dataclass(match_args=True)
+class Or(Sparse):
+    c1: Sparse | ArrayLike
+    c2: Sparse | ArrayLike
+
+    @staticmethod
+    def build(
+        c1: Sparse | ArrayLike,
+        c2: Sparse | ArrayLike,
+    ) -> Sparse | ArrayLike:
+        return Or(c1, c2)
+
+    def mask(self, flag: Flag) -> Sparse | ArrayLike:
+        return self.c1.mask(flag) | self.c2.mask(flag)
+
+    def get(self, addr: DynamicAddressComponent) -> Sparse | ArrayLike:
+        submap1 = self.c1.get(addr)
+        submap2 = self.c2.get(addr)
+        return submap1 | submap2

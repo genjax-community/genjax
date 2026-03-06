@@ -23,7 +23,7 @@ import jax.tree_util as jtu
 import treescope.repr_lib as trl
 from deprecated import deprecated
 
-from genjax._src.core.generative.functional_types import Mask
+from genjax._src.core.generative.functional_types import DynamicAddressComponent, Mask
 from genjax._src.core.pytree import Pytree
 from genjax._src.core.typing import (
     Any,
@@ -48,13 +48,13 @@ if TYPE_CHECKING:
 
 # Address components
 StaticAddressComponent = str
-DynamicAddressComponent = int | IntArray | slice
 AddressComponent = StaticAddressComponent | DynamicAddressComponent
 ExtendedStaticAddressComponent = StaticAddressComponent | EllipsisType
 ExtendedAddressComponent = ExtendedStaticAddressComponent | DynamicAddressComponent
 
 # Addresses
 Address = AddressComponent | tuple[AddressComponent, ...]
+
 StaticAddress = StaticAddressComponent | tuple[StaticAddressComponent, ...]
 ExtendedStaticAddress = (
     ExtendedStaticAddressComponent | tuple[ExtendedStaticAddressComponent, ...]
