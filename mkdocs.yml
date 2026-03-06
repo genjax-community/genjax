@@ -56,6 +56,7 @@ nav:
                 - Update: cookbook/inactive/update/2_update.ipynb
                 - Incremental: cookbook/inactive/update/3_speed_gains.ipynb
                 - IndexRequest: cookbook/inactive/update/4_index_request.ipynb
+                - IndexRequestP2: cookbook/inactive/update/5_index_request.ipynb
 
           - Library developers:
               - Dimap combinator: cookbook/inactive/library_author/dimap_combinator.ipynb
