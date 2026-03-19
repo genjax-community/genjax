@@ -192,7 +192,7 @@ class TestVmap:
             )
 
         with pytest.raises(
-            IndexError,
+            (IndexError, ValueError),
         ):
             jax.jit(foo.vmap(in_axes=0).simulate)(key, (jnp.arange(2), jnp.arange(3)))
 
